@@ -380,18 +380,6 @@ async def calculate_distances_from_file(
 
     return JSONResponse(content={"success_data": success, "error_file_url": url})
 
-# --- ROTA TEMPORÁRIA DE LIMPEZA (REMOVER DEPOIS) ---
-from sqlalchemy import text
-
-@app.get("/force-reset-users-db-secret-key-123")
-def force_reset_users(db: Session = Depends(get_db)):
-    try:
-        # Apaga todos os dados da tabela users e reseta o ID para 1
-        db.execute(text("TRUNCATE TABLE users RESTART IDENTITY CASCADE;"))
-        db.commit()
-        return {"message": "BANCO DE DADOS LIMPO! A tabela de usuários está vazia. Cadastre-se agora para ser o Admin."}
-    except Exception as e:
-        return {"message": f"Erro ao limpar banco: {e}"}
 
 @app.get("/api/download/{filename}")
 async def download_error_file(filename: str):
