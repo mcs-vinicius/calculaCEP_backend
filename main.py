@@ -24,7 +24,7 @@ from jose import JWTError, jwt
 from pydantic import BaseModel
 
 # --- CONFIGURAÇÕES GERAIS ---
-app = FastAPI(title="API CardioGeriatria", version="5.4.0")
+app = FastAPI(title="API CardioGeriatria", version="5.5.0") # Versão Segura
 
 app.add_middleware(
     CORSMiddleware,
@@ -35,7 +35,7 @@ app.add_middleware(
 )
 
 # --- VARIÁVEIS DE AMBIENTE ---
-SECRET_KEY = os.getenv("SECRET_KEY", "AIzaSyB-gfeMDr52mASa39zr3n0QV__9zxS9khk")
+SECRET_KEY = os.getenv("SECRET_KEY", "SUA_CHAVE_SECRETA_MUITO_SEGURA_AQUI")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24
 
@@ -153,7 +153,6 @@ def clean_and_pad_cep(cep: Any) -> str:
     return f"0{cep_numerico}" if len(cep_numerico) == 7 else cep_numerico
 
 def format_seconds_to_hms(seconds: int) -> str:
-    """Converte segundos para formato HH:MM:SS"""
     m, s = divmod(seconds, 60)
     h, m = divmod(m, 60)
     return f"{int(h):02d}:{int(m):02d}:{int(s):02d}"
@@ -175,24 +174,9 @@ def get_google_coords(rua, numero, bairro, municipio, cep) -> tuple | None:
 
 # --- ROTAS ---
 
-@app.on_event("startup")
-def create_default_admin():
-    db = SessionLocal()
-    try:
-        if not db.query(User).first():
-            hashed_pw = pwd_context.hash("admin123")
-            admin = User(nome="Administrador", email="admin@admin.com", matricula="00000", hashed_password=hashed_pw, is_admin=True, must_change_password=False)
-            db.add(admin)
-            db.commit()
-            print("--- ADMIN CRIADO: admin@admin.com / admin123 ---")
-    except Exception as e:
-        print(f"Erro ao criar admin inicial: {e}")
-    finally:
-        db.close()
-
 @app.get("/")
 def read_root():
-    return {"message": "API CardioGeriatria Online v5.4.0", "docs": "/docs"}
+    return {"message": "API CardioGeriatria Online v5.5.0", "docs": "/docs"}
 
 @app.post("/token", response_model=Token)
 async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
@@ -219,20 +203,45 @@ def change_own_password(data: PasswordChange, db: Session = Depends(get_db), cur
     db.commit()
     return {"message": "Senha alterada com sucesso!"}
 
+# --- ROTA DE REGISTRO MODIFICADA (Lógica do Primeiro Usuário) ---
 @app.post("/register")
 def register_user(user: UserCreate, db: Session = Depends(get_db)):
-    is_allowed = db.query(AllowedMatricula).filter(AllowedMatricula.matricula == user.matricula).first()
-    if not is_allowed and user.matricula != "00000": 
-        raise HTTPException(status_code=403, detail=f"Matrícula {user.matricula} não autorizada.")
+    # 1. Conta quantos usuários existem no total
+    users_count = db.query(User).count()
+    
+    # 2. Se for ZERO, este é o "Usuário Fundador" (Admin)
+    is_first_user = (users_count == 0)
 
+    if is_first_user:
+        # Primeiro usuário ganha poderes de Admin e ignora whitelist
+        is_admin = True
+    else:
+        # Usuários seguintes são normais e precisam estar na Whitelist
+        is_admin = False
+        is_allowed = db.query(AllowedMatricula).filter(AllowedMatricula.matricula == user.matricula).first()
+        if not is_allowed: 
+            raise HTTPException(status_code=403, detail=f"Matrícula {user.matricula} não autorizada na lista de espera.")
+
+    # 3. Verifica duplicidade padrão
     if db.query(User).filter((User.email == user.email) | (User.matricula == user.matricula)).first():
         raise HTTPException(status_code=400, detail="Usuário já cadastrado.")
 
     hashed_pw = pwd_context.hash(user.senha)
-    db_user = User(nome=user.nome, email=user.email, matricula=user.matricula, hashed_password=hashed_pw)
+    
+    db_user = User(
+        nome=user.nome, 
+        email=user.email, 
+        matricula=user.matricula, 
+        hashed_password=hashed_pw,
+        is_admin=is_admin,               # Define papel dinamicamente
+        must_change_password=False       # Quem se cadastra define a própria senha, não precisa trocar
+    )
+    
     db.add(db_user)
     db.commit()
-    return {"message": "Cadastro realizado com sucesso!"}
+    
+    msg_role = "ADMINISTRADOR" if is_admin else "usuário padrão"
+    return {"message": f"Cadastro realizado com sucesso! Você foi registrado como {msg_role}."}
 
 # --- ADMIN ---
 
@@ -350,11 +359,8 @@ async def calculate_distances_from_file(
             r_pub = gmaps_client.directions(base_coords, coords, mode="transit", departure_time=datetime.now())
             if r_pub:
                 res['distancia_transporte_km'] = round(r_pub[0]['legs'][0]['distance']['value']/1000, 2)
-                
-                # --- CORREÇÃO E FORMATAÇÃO (HH:MM:SS) ---
                 segundos = r_pub[0]['legs'][0]['duration']['value']
                 res['tempo_transporte_min'] = format_seconds_to_hms(segundos)
-                # Mantemos a chave "tempo_transporte_min" pois é o que o Front espera
             else: 
                 res['distancia_transporte_km'] = "Sem transporte"
                 res['tempo_transporte_min'] = "-"
@@ -373,6 +379,19 @@ async def calculate_distances_from_file(
         url = f"/api/download/{fname}"
 
     return JSONResponse(content={"success_data": success, "error_file_url": url})
+
+# --- ROTA TEMPORÁRIA DE LIMPEZA (REMOVER DEPOIS) ---
+from sqlalchemy import text
+
+@app.get("/force-reset-users-db-secret-key-123")
+def force_reset_users(db: Session = Depends(get_db)):
+    try:
+        # Apaga todos os dados da tabela users e reseta o ID para 1
+        db.execute(text("TRUNCATE TABLE users RESTART IDENTITY CASCADE;"))
+        db.commit()
+        return {"message": "BANCO DE DADOS LIMPO! A tabela de usuários está vazia. Cadastre-se agora para ser o Admin."}
+    except Exception as e:
+        return {"message": f"Erro ao limpar banco: {e}"}
 
 @app.get("/api/download/{filename}")
 async def download_error_file(filename: str):
