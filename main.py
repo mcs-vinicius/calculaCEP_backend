@@ -24,10 +24,8 @@ from jose import JWTError, jwt
 from pydantic import BaseModel
 
 # --- CONFIGURAÇÕES GERAIS ---
-app = FastAPI(title="API CardioGeriatria", version="5.3.0") # Versão atualizada para deploy
+app = FastAPI(title="API CardioGeriatria", version="5.4.0")
 
-# Configuração de CORS para permitir que o Frontend (Vercel) aceda ao Backend
-# Em produção, o ideal é substituir ["*"] pela URL do seu frontend, ex: ["https://seu-app.vercel.app"]
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -36,25 +34,18 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --- VARIÁVEIS DE AMBIENTE (Segurança) ---
-# O 'os.getenv' tenta pegar a variável do sistema (Render). Se não achar, usa o valor padrão (Local).
+# --- VARIÁVEIS DE AMBIENTE ---
 SECRET_KEY = os.getenv("SECRET_KEY", "AIzaSyB-gfeMDr52mASa39zr3n0QV__9zxS9khk")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24
 
-# --- BANCO DE DADOS (PostgreSQL no Render / SQLite Local) ---
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./cardiogeriatria.db")
-
-# Correção necessária para o Render (eles usam postgres:// mas o SQLAlchemy pede postgresql://)
 if DATABASE_URL and DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
-# Configurações do Engine
 if "sqlite" in DATABASE_URL:
-    # Configuração específica para SQLite
     engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
 else:
-    # Configuração para PostgreSQL
     engine = create_engine(DATABASE_URL)
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
@@ -63,7 +54,7 @@ Base = declarative_base()
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
 
-# --- MODELOS (Tabelas) ---
+# --- MODELOS ---
 class User(Base):
     __tablename__ = "users"
     id = Column(Integer, primary_key=True, index=True)
@@ -79,10 +70,9 @@ class AllowedMatricula(Base):
     id = Column(Integer, primary_key=True, index=True)
     matricula = Column(String, unique=True, index=True)
 
-# Cria as tabelas se não existirem
 Base.metadata.create_all(bind=engine)
 
-# --- SCHEMAS (Pydantic) ---
+# --- SCHEMAS ---
 class UserCreate(BaseModel):
     nome: str
     matricula: str
@@ -145,16 +135,14 @@ async def get_current_admin_user(current_user: User = Depends(get_current_user))
         raise HTTPException(status_code=403, detail="Acesso restrito a administradores")
     return current_user
 
-# --- CONFIG GOOGLE MAPS ---
-# Pega a chave do ambiente (Render) ou usa uma string vazia/padrão localmente
+# --- GOOGLE MAPS & UTILS ---
 GOOGLE_MAPS_API_KEY = os.getenv("GOOGLE_MAPS_API_KEY", 'AIzaSyB-gfeMDr52mASa39zr3n0QV__9zxS9khk')
 
-# Inicializa o cliente apenas se tiver chave, para evitar erro na inicialização se esquecer
 if GOOGLE_MAPS_API_KEY:
     gmaps_client = googlemaps.Client(key=GOOGLE_MAPS_API_KEY)
 else:
     gmaps_client = None
-    print("AVISO: GOOGLE_MAPS_API_KEY não encontrada nas variáveis de ambiente.")
+    print("AVISO: GOOGLE_MAPS_API_KEY ausente.")
 
 coords_cache: Dict[str, tuple] = {}
 
@@ -164,9 +152,14 @@ def clean_and_pad_cep(cep: Any) -> str:
     cep_numerico = "".join(filter(str.isdigit, s_cep))
     return f"0{cep_numerico}" if len(cep_numerico) == 7 else cep_numerico
 
+def format_seconds_to_hms(seconds: int) -> str:
+    """Converte segundos para formato HH:MM:SS"""
+    m, s = divmod(seconds, 60)
+    h, m = divmod(m, 60)
+    return f"{int(h):02d}:{int(m):02d}:{int(s):02d}"
+
 def get_google_coords(rua, numero, bairro, municipio, cep) -> tuple | None:
-    if not gmaps_client: return None # Proteção se a chave não estiver configurada
-    
+    if not gmaps_client: return None
     cache_key = f"{rua}-{cep}"
     if cache_key in coords_cache: return coords_cache[cache_key]
     try:
@@ -184,22 +177,14 @@ def get_google_coords(rua, numero, bairro, municipio, cep) -> tuple | None:
 
 @app.on_event("startup")
 def create_default_admin():
-    """Cria o usuário admin automaticamente se o banco estiver vazio (útil no primeiro deploy)"""
     db = SessionLocal()
     try:
         if not db.query(User).first():
             hashed_pw = pwd_context.hash("admin123")
-            admin = User(
-                nome="Administrador", 
-                email="admin@admin.com", 
-                matricula="00000", 
-                hashed_password=hashed_pw, 
-                is_admin=True, 
-                must_change_password=False
-            )
+            admin = User(nome="Administrador", email="admin@admin.com", matricula="00000", hashed_password=hashed_pw, is_admin=True, must_change_password=False)
             db.add(admin)
             db.commit()
-            print("--- ADMIN INICIAL CRIADO: admin@admin.com / admin123 ---")
+            print("--- ADMIN CRIADO: admin@admin.com / admin123 ---")
     except Exception as e:
         print(f"Erro ao criar admin inicial: {e}")
     finally:
@@ -207,7 +192,7 @@ def create_default_admin():
 
 @app.get("/")
 def read_root():
-    return {"message": "API CardioGeriatria Online", "docs": "/docs"}
+    return {"message": "API CardioGeriatria Online v5.4.0", "docs": "/docs"}
 
 @app.post("/token", response_model=Token)
 async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
@@ -218,7 +203,6 @@ async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(
         raise HTTPException(status_code=401, detail="Credenciais incorretas")
     
     access_token = create_access_token(data={"sub": user.email}, expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
-    
     return {
         "access_token": access_token, 
         "token_type": "bearer", 
@@ -250,7 +234,7 @@ def register_user(user: UserCreate, db: Session = Depends(get_db)):
     db.commit()
     return {"message": "Cadastro realizado com sucesso!"}
 
-# --- Rotas ADMIN ---
+# --- ADMIN ---
 
 @app.get("/admin/whitelist", response_model=List[WhitelistItem])
 def get_whitelist(db: Session = Depends(get_db), current_user: User = Depends(get_current_admin_user)):
@@ -327,7 +311,6 @@ async def calculate_distances_from_file(
         df = df.replace({pd.NA: None, float('nan'): None})
     except Exception as e: raise HTTPException(status_code=400, detail=f"Erro ao ler arquivo: {e}")
 
-    # Normalização de nomes de colunas (caixa baixa) para evitar erros comuns
     df.columns = [c.lower().strip() for c in df.columns]
     
     required = ["id_paciente", "cep", "rua", "municipio"]
@@ -344,7 +327,6 @@ async def calculate_distances_from_file(
             errors.append(d)
             continue
         
-        # Tenta pegar coordenadas do paciente
         coords = get_google_coords(d.get("rua"), d.get("numero"), d.get("bairro"), d.get("municipio"), cep)
         if not coords:
             d['motivo_erro'] = 'Endereço não encontrado no Google Maps'
@@ -368,23 +350,26 @@ async def calculate_distances_from_file(
             r_pub = gmaps_client.directions(base_coords, coords, mode="transit", departure_time=datetime.now())
             if r_pub:
                 res['distancia_transporte_km'] = round(r_pub[0]['legs'][0]['distance']['value']/1000, 2)
-                res['tempo_transporte_min'] = round(r_pub[0]['legs'][0]['duration']['value']/60, 0)
+                
+                # --- CORREÇÃO E FORMATAÇÃO (HH:MM:SS) ---
+                segundos = r_pub[0]['legs'][0]['duration']['value']
+                res['tempo_transporte_min'] = format_seconds_to_hms(segundos)
+                # Mantemos a chave "tempo_transporte_min" pois é o que o Front espera
             else: 
                 res['distancia_transporte_km'] = "Sem transporte"
                 res['tempo_transporte_min'] = "-"
-        except: res['distancia_transporte_km'] = "Erro API"
+        except: 
+            res['distancia_transporte_km'] = "Erro API"
+            res['tempo_transporte_min'] = "-"
         
         success.append(res)
 
     url = None
     if errors:
-        # No Render, não devemos salvar arquivos localmente por muito tempo, 
-        # mas para download imediato funciona se usar a pasta temporária do sistema ou 'temp_files' se criada.
         os.makedirs("temp_files", exist_ok=True)
         fname = f"erros_{uuid.uuid4().hex[:8]}.xlsx"
         path = os.path.join("temp_files", fname)
         pd.DataFrame(errors).to_excel(path, index=False)
-        # Retorna URL relativa para download
         url = f"/api/download/{fname}"
 
     return JSONResponse(content={"success_data": success, "error_file_url": url})
