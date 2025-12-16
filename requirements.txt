@@ -1,0 +1,11 @@
+fastapi
+uvicorn
+pandas
+googlemaps
+sqlalchemy
+psycopg2-binary
+passlib[bcrypt]
+python-jose[cryptography]
+python-multipart
+openpyxl
+requests

@@ -24,8 +24,10 @@ from jose import JWTError, jwt
 from pydantic import BaseModel
 
 # --- CONFIGURAÇÕES GERAIS ---
-app = FastAPI(title="API CardioGeriatria", version="5.2.0")
+app = FastAPI(title="API CardioGeriatria", version="5.3.0") # Versão atualizada para deploy
 
+# Configuração de CORS para permitir que o Frontend (Vercel) aceda ao Backend
+# Em produção, o ideal é substituir ["*"] pela URL do seu frontend, ex: ["https://seu-app.vercel.app"]
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -34,12 +36,27 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-SECRET_KEY = "SUA_CHAVE_SECRETA_MUITO_SEGURA_AQUI"
+# --- VARIÁVEIS DE AMBIENTE (Segurança) ---
+# O 'os.getenv' tenta pegar a variável do sistema (Render). Se não achar, usa o valor padrão (Local).
+SECRET_KEY = os.getenv("SECRET_KEY", "AIzaSyB-gfeMDr52mASa39zr3n0QV__9zxS9khk")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24
 
-DATABASE_URL = "sqlite:///./cardiogeriatria.db"
-engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
+# --- BANCO DE DADOS (PostgreSQL no Render / SQLite Local) ---
+DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./cardiogeriatria.db")
+
+# Correção necessária para o Render (eles usam postgres:// mas o SQLAlchemy pede postgresql://)
+if DATABASE_URL and DATABASE_URL.startswith("postgres://"):
+    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
+
+# Configurações do Engine
+if "sqlite" in DATABASE_URL:
+    # Configuração específica para SQLite
+    engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
+else:
+    # Configuração para PostgreSQL
+    engine = create_engine(DATABASE_URL)
+
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
@@ -55,7 +72,6 @@ class User(Base):
     matricula = Column(String, unique=True, index=True)
     hashed_password = Column(String)
     is_admin = Column(Boolean, default=False)
-    # NOVO CAMPO: Indica se o usuário é obrigado a trocar a senha
     must_change_password = Column(Boolean, default=False)
 
 class AllowedMatricula(Base):
@@ -63,6 +79,7 @@ class AllowedMatricula(Base):
     id = Column(Integer, primary_key=True, index=True)
     matricula = Column(String, unique=True, index=True)
 
+# Cria as tabelas se não existirem
 Base.metadata.create_all(bind=engine)
 
 # --- SCHEMAS (Pydantic) ---
@@ -78,7 +95,7 @@ class UserList(BaseModel):
     email: str
     matricula: str
     is_admin: bool
-    must_change_password: bool # Retorna status na lista
+    must_change_password: bool
     class Config:
         from_attributes = True
 
@@ -96,7 +113,7 @@ class Token(BaseModel):
     token_type: str
     is_admin: bool
     nome: str
-    must_change_password: bool # Envia status no login
+    must_change_password: bool
 
 class PasswordChange(BaseModel):
     new_password: str
@@ -129,8 +146,16 @@ async def get_current_admin_user(current_user: User = Depends(get_current_user))
     return current_user
 
 # --- CONFIG GOOGLE MAPS ---
-GOOGLE_MAPS_API_KEY = 'AIzaSyB-gfeMDr52mASa39zr3n0QV__9zxS9khk'
-gmaps_client = googlemaps.Client(key=GOOGLE_MAPS_API_KEY)
+# Pega a chave do ambiente (Render) ou usa uma string vazia/padrão localmente
+GOOGLE_MAPS_API_KEY = os.getenv("GOOGLE_MAPS_API_KEY", 'AIzaSyB-gfeMDr52mASa39zr3n0QV__9zxS9khk')
+
+# Inicializa o cliente apenas se tiver chave, para evitar erro na inicialização se esquecer
+if GOOGLE_MAPS_API_KEY:
+    gmaps_client = googlemaps.Client(key=GOOGLE_MAPS_API_KEY)
+else:
+    gmaps_client = None
+    print("AVISO: GOOGLE_MAPS_API_KEY não encontrada nas variáveis de ambiente.")
+
 coords_cache: Dict[str, tuple] = {}
 
 def clean_and_pad_cep(cep: Any) -> str:
@@ -140,6 +165,8 @@ def clean_and_pad_cep(cep: Any) -> str:
     return f"0{cep_numerico}" if len(cep_numerico) == 7 else cep_numerico
 
 def get_google_coords(rua, numero, bairro, municipio, cep) -> tuple | None:
+    if not gmaps_client: return None # Proteção se a chave não estiver configurada
+    
     cache_key = f"{rua}-{cep}"
     if cache_key in coords_cache: return coords_cache[cache_key]
     try:
@@ -153,19 +180,34 @@ def get_google_coords(rua, numero, bairro, municipio, cep) -> tuple | None:
     except Exception as e: print(f"Erro Geo: {e}")
     return None
 
-# --- ROTAS DE AUTENTICAÇÃO ---
+# --- ROTAS ---
 
 @app.on_event("startup")
 def create_default_admin():
+    """Cria o usuário admin automaticamente se o banco estiver vazio (útil no primeiro deploy)"""
     db = SessionLocal()
-    if not db.query(User).first():
-        hashed_pw = pwd_context.hash("admin123")
-        # Admin não precisa trocar senha inicial por padrão, mas pode se quiser
-        admin = User(nome="Administrador", email="admin@admin.com", matricula="00000", hashed_password=hashed_pw, is_admin=True, must_change_password=False)
-        db.add(admin)
-        db.commit()
-        print("--- ADMIN CRIADO: admin@admin.com / admin123 ---")
-    db.close()
+    try:
+        if not db.query(User).first():
+            hashed_pw = pwd_context.hash("admin123")
+            admin = User(
+                nome="Administrador", 
+                email="admin@admin.com", 
+                matricula="00000", 
+                hashed_password=hashed_pw, 
+                is_admin=True, 
+                must_change_password=False
+            )
+            db.add(admin)
+            db.commit()
+            print("--- ADMIN INICIAL CRIADO: admin@admin.com / admin123 ---")
+    except Exception as e:
+        print(f"Erro ao criar admin inicial: {e}")
+    finally:
+        db.close()
+
+@app.get("/")
+def read_root():
+    return {"message": "API CardioGeriatria Online", "docs": "/docs"}
 
 @app.post("/token", response_model=Token)
 async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
@@ -177,7 +219,6 @@ async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(
     
     access_token = create_access_token(data={"sub": user.email}, expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
     
-    # Retorna também se o usuário DEVE trocar a senha
     return {
         "access_token": access_token, 
         "token_type": "bearer", 
@@ -188,10 +229,9 @@ async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(
 
 @app.post("/users/change-password")
 def change_own_password(data: PasswordChange, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    """Rota para o usuário logado trocar sua própria senha"""
     hashed_pw = pwd_context.hash(data.new_password)
     current_user.hashed_password = hashed_pw
-    current_user.must_change_password = False # Remove a obrigatoriedade após a troca
+    current_user.must_change_password = False
     db.commit()
     return {"message": "Senha alterada com sucesso!"}
 
@@ -210,7 +250,7 @@ def register_user(user: UserCreate, db: Session = Depends(get_db)):
     db.commit()
     return {"message": "Cadastro realizado com sucesso!"}
 
-# --- ADMIN ---
+# --- Rotas ADMIN ---
 
 @app.get("/admin/whitelist", response_model=List[WhitelistItem])
 def get_whitelist(db: Session = Depends(get_db), current_user: User = Depends(get_current_admin_user)):
@@ -253,7 +293,7 @@ def reset_user_password(user_id: int, db: Session = Depends(get_db), current_use
     
     temp_password = secrets.token_urlsafe(8)
     user.hashed_password = pwd_context.hash(temp_password)
-    user.must_change_password = True # OBRIGA A TROCA NO PRÓXIMO LOGIN
+    user.must_change_password = True
     db.commit()
     
     return {
@@ -269,58 +309,82 @@ async def calculate_distances_from_file(
     base_municipio: str = Form(...), base_cep: str = Form(...), file: UploadFile = File(...),
     current_user: User = Depends(get_current_user)
 ):
-    # (Mantendo o código da calculadora igual)
+    if not gmaps_client:
+        raise HTTPException(status_code=500, detail="Serviço de Mapas não configurado no servidor (Falta API KEY).")
+
     try:
         base_coords = get_google_coords(base_rua, base_numero, base_bairro, base_municipio, clean_and_pad_cep(base_cep))
-        if not base_coords: raise HTTPException(status_code=400, detail="Erro base coords")
+        if not base_coords: raise HTTPException(status_code=400, detail="Não foi possível geolocalizar o endereço base.")
     except Exception as e: raise HTTPException(status_code=400, detail=f"Erro base: {e}")
 
     try:
         contents = await file.read()
-        df = pd.read_excel(io.BytesIO(contents), dtype={'cep': str}) if file.filename.endswith(('.xls', '.xlsx')) else pd.read_csv(io.BytesIO(contents), encoding='utf-8', dtype={'cep': str})
+        if file.filename.endswith(('.xls', '.xlsx')):
+            df = pd.read_excel(io.BytesIO(contents), dtype={'cep': str}) 
+        else:
+            df = pd.read_csv(io.BytesIO(contents), encoding='utf-8', dtype={'cep': str})
+        
         df = df.replace({pd.NA: None, float('nan'): None})
-    except Exception as e: raise HTTPException(status_code=400, detail=f"Erro arquivo: {e}")
+    except Exception as e: raise HTTPException(status_code=400, detail=f"Erro ao ler arquivo: {e}")
 
+    # Normalização de nomes de colunas (caixa baixa) para evitar erros comuns
+    df.columns = [c.lower().strip() for c in df.columns]
+    
     required = ["id_paciente", "cep", "rua", "municipio"]
-    for col in required:
-        if col not in df.columns: raise HTTPException(status_code=400, detail=f"Falta coluna {col}")
+    missing = [col for col in required if col not in df.columns]
+    if missing:
+        raise HTTPException(status_code=400, detail=f"Colunas obrigatórias faltando no arquivo: {', '.join(missing)}")
 
     success, errors = [], []
     for _, row in df.iterrows():
         d = row.to_dict()
         cep = clean_and_pad_cep(d.get("cep"))
         if not cep: 
-            d['motivo'] = 'CEP ruim'
+            d['motivo_erro'] = 'CEP inválido ou vazio'
             errors.append(d)
             continue
         
+        # Tenta pegar coordenadas do paciente
         coords = get_google_coords(d.get("rua"), d.get("numero"), d.get("bairro"), d.get("municipio"), cep)
         if not coords:
-            d['motivo'] = 'Endereço não achado'
+            d['motivo_erro'] = 'Endereço não encontrado no Google Maps'
             errors.append(d)
             continue
         
         res = d.copy()
-        res['cep'] = cep
+        res['cep_formatado'] = cep
+        
+        # Rota de Carro
         try:
             r_car = gmaps_client.directions(base_coords, coords, mode="driving")
-            res['distancia_rota_carro_km'] = round(r_car[0]['legs'][0]['distance']['value']/1000, 2) if r_car else "N/A"
-        except: res['distancia_rota_carro_km'] = "Erro"
+            if r_car:
+                res['distancia_rota_carro_km'] = round(r_car[0]['legs'][0]['distance']['value']/1000, 2)
+            else:
+                res['distancia_rota_carro_km'] = "Rota não encontrada"
+        except: res['distancia_rota_carro_km'] = "Erro API"
         
+        # Rota de Transporte Público
         try:
             r_pub = gmaps_client.directions(base_coords, coords, mode="transit", departure_time=datetime.now())
             if r_pub:
                 res['distancia_transporte_km'] = round(r_pub[0]['legs'][0]['distance']['value']/1000, 2)
-                res['tempo_transporte_s'] = r_pub[0]['legs'][0]['duration']['value']
-            else: res['distancia_transporte_km'] = "N/A"
-        except: res['distancia_transporte_km'] = "Erro"
+                res['tempo_transporte_min'] = round(r_pub[0]['legs'][0]['duration']['value']/60, 0)
+            else: 
+                res['distancia_transporte_km'] = "Sem transporte"
+                res['tempo_transporte_min'] = "-"
+        except: res['distancia_transporte_km'] = "Erro API"
+        
         success.append(res)
 
     url = None
     if errors:
+        # No Render, não devemos salvar arquivos localmente por muito tempo, 
+        # mas para download imediato funciona se usar a pasta temporária do sistema ou 'temp_files' se criada.
         os.makedirs("temp_files", exist_ok=True)
-        fname = f"erros_{uuid.uuid4().hex[:6]}.xlsx"
-        pd.DataFrame(errors).to_excel(os.path.join("temp_files", fname), index=False)
+        fname = f"erros_{uuid.uuid4().hex[:8]}.xlsx"
+        path = os.path.join("temp_files", fname)
+        pd.DataFrame(errors).to_excel(path, index=False)
+        # Retorna URL relativa para download
         url = f"/api/download/{fname}"
 
     return JSONResponse(content={"success_data": success, "error_file_url": url})
@@ -329,4 +393,4 @@ async def calculate_distances_from_file(
 async def download_error_file(filename: str):
     path = os.path.join("temp_files", filename)
     if os.path.exists(path): return FileResponse(path=path, filename=filename)
-    raise HTTPException(status_code=404)
+    raise HTTPException(status_code=404, detail="Arquivo não encontrado ou expirado.")
