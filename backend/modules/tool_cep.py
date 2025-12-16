@@ -14,7 +14,7 @@ from backend.common import get_current_user, User
 router = APIRouter(prefix="/api/calculate-distances", tags=["Ferramenta: CEP"])
 
 # Inicializa o cliente do Google Maps apenas se a chave existir
-GOOGLE_MAPS_API_KEY = os.getenv("GOOGLE_MAPS_API_KEY", "")
+GOOGLE_MAPS_API_KEY = os.getenv("GOOGLE_MAPS_API_KEY", "AIzaSyB-gfeMDr52mASa39zr3n0QV__9zxS9khk")
 gmaps_client = googlemaps.Client(key=GOOGLE_MAPS_API_KEY) if GOOGLE_MAPS_API_KEY else None
 
 # Cache simples em memória para evitar chamadas repetidas ao Google (economiza dinheiro/quota)
