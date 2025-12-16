@@ -1,47 +1,62 @@
+# backend/modules/admin.py
 import secrets
 from typing import List
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from backend.common import get_db, get_current_admin, User, AllowedMatricula, WhitelistItem, WhitelistCreate, UserList, pwd_context
 
+# Protege TODAS as rotas deste arquivo com 'get_current_admin'
 router = APIRouter(prefix="/admin", tags=["Administrativo"])
+
+# --- Gestão da Whitelist (Lista de Espera) ---
 
 @router.get("/whitelist", response_model=List[WhitelistItem])
 def get_whitelist(db: Session = Depends(get_db), admin=Depends(get_current_admin)):
+    """Lista todas as matrículas permitidas"""
     return db.query(AllowedMatricula).all()
 
 @router.post("/whitelist")
 def add_whitelist(data: WhitelistCreate, db: Session = Depends(get_db), admin=Depends(get_current_admin)):
+    """Adiciona uma nova matrícula à lista de permitidos"""
     if db.query(AllowedMatricula).filter(AllowedMatricula.matricula == data.matricula).first():
-        raise HTTPException(status_code=400, detail="Já existe.")
+        raise HTTPException(status_code=400, detail="Matrícula já existe na lista.")
     db.add(AllowedMatricula(matricula=data.matricula))
     db.commit()
-    return {"message": "Adicionado."}
+    return {"message": "Adicionado com sucesso."}
 
 @router.delete("/whitelist/{id}")
 def del_whitelist(id: int, db: Session = Depends(get_db), admin=Depends(get_current_admin)):
+    """Remove uma matrícula da lista"""
     item = db.query(AllowedMatricula).filter(AllowedMatricula.id == id).first()
     if item: db.delete(item); db.commit()
     return {"message": "Removido."}
 
+# --- Gestão de Usuários ---
+
 @router.get("/users", response_model=List[UserList])
 def get_users(db: Session = Depends(get_db), admin=Depends(get_current_admin)):
+    """Lista todos os usuários cadastrados"""
     return db.query(User).all()
 
 @router.delete("/users/{user_id}")
 def del_user(user_id: int, db: Session = Depends(get_db), admin=Depends(get_current_admin)):
-    if user_id == admin.id: raise HTTPException(status_code=400, detail="Não pode se excluir.")
+    """Exclui um usuário (Não permite excluir a si mesmo)"""
+    if user_id == admin.id: raise HTTPException(status_code=400, detail="Não pode excluir a si mesmo.")
     user = db.query(User).filter(User.id == user_id).first()
     if user: db.delete(user); db.commit()
-    return {"message": "Excluído."}
+    return {"message": "Usuário excluído."}
 
 @router.post("/users/{user_id}/reset-password")
 def reset_pass(user_id: int, db: Session = Depends(get_db), admin=Depends(get_current_admin)):
+    """
+    Reseta a senha de um usuário.
+    Gera uma senha aleatória temporária e obriga o usuário a trocá-la no próximo login.
+    """
     user = db.query(User).filter(User.id == user_id).first()
-    if not user: raise HTTPException(404, "Não encontrado")
+    if not user: raise HTTPException(404, "Usuário não encontrado")
     
-    temp = secrets.token_urlsafe(8)
-    user.hashed_password = pwd_context.hash(temp)
-    user.must_change_password = True
+    temp_pass = secrets.token_urlsafe(8) # Gera senha segura de 8 caracteres
+    user.hashed_password = pwd_context.hash(temp_pass)
+    user.must_change_password = True # Ativa flag de troca obrigatória
     db.commit()
-    return {"message": "Senha resetada", "temp_password": temp}
+    return {"message": "Senha resetada", "temp_password": temp_pass}
