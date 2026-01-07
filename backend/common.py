@@ -77,6 +77,7 @@ class UserCreate(BaseModel):
     email: str
     senha: str
 
+
 class Token(BaseModel):
     """Schema da resposta de Login bem sucedido."""
     access_token: str
