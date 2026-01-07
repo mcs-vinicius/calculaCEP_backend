@@ -5,7 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 
 # Importação dos módulos (ferramentas) que compõem o sistema.
-from backend.modules import auth, admin, tool_cep
+from backend.modules import auth, admin, tool_cep, backup
 
 # --- Inicialização da Aplicação ---
 # Define o título e versão que aparecerão na documentação automática (/docs)
@@ -32,7 +32,7 @@ app.add_middleware(
 app.include_router(auth.router)      # Rotas de Autenticação (Login/Registro)
 app.include_router(admin.router)     # Rotas Administrativas (Gestão de usuários)
 app.include_router(tool_cep.router)  # Rotas da Ferramenta de CEP
-
+app.include_router(backup.router)
 # --- Rota Global de Download ---
 @app.get("/api/download/{filename}")
 async def download_error_file(filename: str):
