@@ -6,46 +6,58 @@ from backend.common import get_db, User, AllowedMatricula, UserCreate, Token, cr
 
 router = APIRouter(tags=["Autenticação"])
 
-# --- Rota de Login ---
-# Recebe user/senha do form, valida e retorna o Token de acesso.
 @router.post("/token", response_model=Token)
 async def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
-    # Aceita tanto E-mail quanto Matrícula no campo de login
+    """
+    Realiza o Login do usuário.
+    Aceita tanto E-mail quanto Matrícula no campo 'username'.
+    Retorna um Token JWT (Bearer) se as credenciais forem válidas.
+    """
+    # Busca usuário por e-mail OU matrícula
     user = db.query(User).filter((User.email == form_data.username) | (User.matricula == form_data.username)).first()
     
-    # Verifica se usuário existe e se a senha bate com o hash
+    # Valida existência e senha (hash)
     if not user or not pwd_context.verify(form_data.password, user.hashed_password):
         raise HTTPException(status_code=401, detail="Credenciais incorretas")
     
-    # Cria o Token JWT
+    # Gera o token de acesso
     access_token = create_access_token(data={"sub": user.email})
+    
     return {
-        "access_token": access_token, "token_type": "bearer", 
-        "is_admin": user.is_admin, "nome": user.nome, "must_change_password": user.must_change_password
+        "access_token": access_token, 
+        "token_type": "bearer", 
+        "is_admin": user.is_admin, 
+        "nome": user.nome, 
+        "must_change_password": user.must_change_password
     }
 
-# --- Rota de Registro Inteligente ---
 @router.post("/register")
 def register(user: UserCreate, db: Session = Depends(get_db)):
-    # Verifica quantos usuários existem no banco
+    """
+    Registra um novo usuário no sistema.
+    Lógica 'Inteligente':
+    1. Se for o PRIMEIRO usuário do banco -> Torna-se ADMIN automaticamente.
+    2. Se não for o primeiro -> Verifica se a matrícula está na Whitelist.
+    """
     users_count = db.query(User).count()
-    
-    # Se for ZERO, este é o primeiro usuário do sistema -> Vira ADMIN automaticamente.
-    is_admin = (users_count == 0)
+    is_admin = (users_count == 0) # True apenas se o banco estiver vazio
 
+    # Validação de Whitelist (apenas para não-admins)
     if not is_admin:
-        # Se NÃO for o primeiro, verifica se a matrícula está na Whitelist
         if not db.query(AllowedMatricula).filter(AllowedMatricula.matricula == user.matricula).first(): 
             raise HTTPException(status_code=403, detail="Matrícula não autorizada pelo administrador.")
 
-    # Verifica duplicidade
+    # Verifica se usuário já existe
     if db.query(User).filter((User.email == user.email) | (User.matricula == user.matricula)).first():
-        raise HTTPException(status_code=400, detail="Usuário já existe.")
+        raise HTTPException(status_code=400, detail="Usuário já existe (E-mail ou Matrícula duplicada).")
 
-    # Cria o usuário com a senha criptografada
+    # Cria e salva o usuário
     db_user = User(
-        nome=user.nome, email=user.email, matricula=user.matricula, 
-        hashed_password=pwd_context.hash(user.senha), is_admin=is_admin
+        nome=user.nome, 
+        email=user.email, 
+        matricula=user.matricula, 
+        hashed_password=pwd_context.hash(user.senha), # Criptografa a senha
+        is_admin=is_admin
     )
     db.add(db_user)
     db.commit()
@@ -53,10 +65,13 @@ def register(user: UserCreate, db: Session = Depends(get_db)):
     role = "ADMINISTRADOR" if is_admin else "usuário padrão"
     return {"message": f"Cadastro realizado com sucesso! Você foi registrado como {role}."}
 
-# --- Rota de Troca de Senha (Pelo próprio usuário) ---
 @router.post("/users/change-password")
 def change_own_password(data: PasswordChange, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """
+    Permite que o próprio usuário logado altere sua senha.
+    Também remove a flag 'must_change_password' se ela estiver ativa.
+    """
     current_user.hashed_password = pwd_context.hash(data.new_password)
-    current_user.must_change_password = False # Remove a flag de "Troca Obrigatória"
+    current_user.must_change_password = False 
     db.commit()
     return {"message": "Senha alterada com sucesso!"}

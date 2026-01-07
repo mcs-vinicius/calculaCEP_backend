@@ -5,54 +5,64 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 
 # Importação dos módulos (ferramentas) que compõem o sistema.
-# Cada módulo é um "mini-app" com suas próprias rotas.
 from backend.modules import auth, admin, tool_cep
 
-# Inicializa a aplicação FastAPI com metadados básicos
-app = FastAPI(title="Digital Health Tools", version="2.0")
-
-# --- Configuração de CORS (Cross-Origin Resource Sharing) ---
-# Isso permite que o Frontend (hospedado na Vercel, por exemplo) converse com este Backend.
-# allow_origins=["*"] libera acesso para qualquer site. 
-# Em produção, recomenda-se trocar "*" pela URL específica do frontend para maior segurança.
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],  # Permite GET, POST, DELETE, etc.
-    allow_headers=["*"],  # Permite enviar Tokens e outros cabeçalhos
+# --- Inicialização da Aplicação ---
+# Define o título e versão que aparecerão na documentação automática (/docs)
+app = FastAPI(
+    title="Digital Health Tools API", 
+    description="API para ferramentas de gestão e cálculo de rotas.",
+    version="2.0"
 )
 
-# --- Inclusão de Rotas (Conectando os módulos) ---
-# Aqui "plugamos" as ferramentas na aplicação principal.
-app.include_router(auth.router)      # Rotas de Login e Registro
-app.include_router(admin.router)     # Rotas do Painel Administrativo
-app.include_router(tool_cep.router)  # Rotas da Calculadora de CEP
+# --- Configuração de CORS (Cross-Origin Resource Sharing) ---
+# O CORS é um mecanismo de segurança que permite (ou bloqueia) que um navegador
+# rodando um site em 'domain-a.com' faça requisições para 'domain-b.com'.
+# Como seu frontend (Vercel) e backend (Render) estão em domínios diferentes, isso é obrigatório.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Em produção, idealmente troque "*" pela URL do seu frontend.
+    allow_credentials=True,
+    allow_methods=["*"],  # Permite todos os métodos (GET, POST, PUT, DELETE, etc.)
+    allow_headers=["*"],  # Permite todos os cabeçalhos (Authorization, Content-Type, etc.)
+)
+
+# --- Inclusão de Rotas (Roteamento Modular) ---
+# Aqui conectamos as rotas definidas nos outros arquivos à aplicação principal.
+app.include_router(auth.router)      # Rotas de Autenticação (Login/Registro)
+app.include_router(admin.router)     # Rotas Administrativas (Gestão de usuários)
+app.include_router(tool_cep.router)  # Rotas da Ferramenta de CEP
 
 # --- Rota Global de Download ---
-# Esta rota serve para baixar arquivos gerados por QUALQUER ferramenta do sistema.
-# Ela procura o arquivo na pasta temporária e o entrega ao navegador.
 @app.get("/api/download/{filename}")
 async def download_error_file(filename: str):
     """
-    Endpoint para baixar arquivos temporários (ex: relatórios de erros).
-    Recebe o nome do arquivo e tenta encontrá-lo na pasta 'backend/temp_files' ou 'temp_files'.
+    Endpoint genérico para download de arquivos temporários gerados pelo sistema.
+    
+    Args:
+        filename (str): O nome do arquivo a ser baixado (ex: erros_123.xlsx).
+        
+    Returns:
+        FileResponse: O arquivo físico se encontrado.
+        
+    Raises:
+        HTTPException (404): Se o arquivo não existir ou tiver expirado.
     """
-    # Tenta localizar o arquivo dentro da estrutura modular (pasta backend/temp_files)
+    # 1. Tenta localizar na estrutura modular (backend/temp_files)
     path = os.path.join("backend/temp_files", filename)
     
-    # Fallback: Se não achar, tenta na raiz (caso o servidor rode de forma diferente)
+    # 2. Fallback: Tenta na raiz se não achar (para compatibilidade de execução local)
     if not os.path.exists(path):
         path = os.path.join("temp_files", filename)
     
-    # Se o arquivo existir, envia para download. Senão, retorna erro 404.
+    # 3. Entrega o arquivo ao navegador
     if os.path.exists(path): 
         return FileResponse(path=path, filename=filename)
     
     raise HTTPException(status_code=404, detail="Arquivo não encontrado ou expirado.")
 
-# --- Rota Raiz ---
-# Apenas para verificar se a API está online ao acessar a URL base.
+# --- Health Check ---
 @app.get("/")
 def read_root():
-    return {"message": "Digital Health Tools Online", "docs": "/docs"}
+    """Rota raiz para verificar se a API está online."""
+    return {"message": "Digital Health Tools Online", "docs_url": "/docs"}
